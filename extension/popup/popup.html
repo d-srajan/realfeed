@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RealFeed</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="title">RealFeed</h1>
+      <label class="toggle">
+        <input type="checkbox" id="enableToggle" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </header>
+
+    <p class="subtitle">Spot AI-generated content instantly on LinkedIn</p>
+
+    <div class="status" id="status">
+      <span class="status-dot status-dot--active"></span>
+      <span id="statusText">Active — scanning visible posts</span>
+    </div>
+
+    <div class="settings">
+      <div class="setting-row">
+        <label for="sensitivity">Sensitivity</label>
+        <select id="sensitivity">
+          <option value="low">Low (fewer false positives)</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High (catch more AI)</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <label>Analyze</label>
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="analyzeText" checked>
+            Text
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="analyzeImages" checked>
+            Images
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <span class="version">v0.1.0</span>
+      <span class="footer-note">100% local — no data sent anywhere</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

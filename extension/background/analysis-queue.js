@@ -1,0 +1,209 @@
+/**
+ * AnalysisQueue — manages lazy, viewport-driven analysis with:
+ *   - Concurrency limit (max 2 parallel analyses)
+ *   - Debouncing (300ms — skip posts during fast scrolling)
+ *   - Cancellation (abort when post leaves viewport)
+ *   - Two-phase scoring (heuristic first, then ML)
+ *   - Cache integration (skip if already analyzed)
+ */
+
+import * as cache from '../utils/cache.js';
+import { analyzeText } from './text-detector.js';
+import { analyzeImage } from './image-detector.js';
+import { computeEnsemble } from './ensemble.js';
+
+const MAX_CONCURRENT = 2;
+const DEBOUNCE_MS = 300;
+
+class AnalysisQueue {
+  constructor() {
+    /** @type {Map<string, {timer: number, abortController: AbortController}>} */
+    this.pending = new Map();
+
+    /** @type {Set<string>} */
+    this.active = new Set();
+
+    /** @type {Array<{postId: string, postData: object, resolve: Function}>} */
+    this.waitQueue = [];
+
+    /** @type {string} */
+    this.sensitivity = 'medium';
+  }
+
+  /**
+   * Update settings from storage.
+   */
+  updateSettings(settings) {
+    if (settings.sensitivity) this.sensitivity = settings.sensitivity;
+  }
+
+  /**
+   * Called when a post enters the viewport.
+   * Starts a debounce timer before queuing analysis.
+   * @param {string} postId
+   * @param {object} postData - { text, imageUrls, hasVideo }
+   * @param {Function} onResult - callback with (postId, result)
+   */
+  onPostVisible(postId, postData, onResult) {
+    // Already analyzed or in progress
+    if (this.active.has(postId)) return;
+
+    // Already pending debounce
+    if (this.pending.has(postId)) return;
+
+    const abortController = new AbortController();
+    const timer = setTimeout(() => {
+      this.enqueue(postId, postData, onResult, abortController);
+    }, DEBOUNCE_MS);
+
+    this.pending.set(postId, { timer, abortController });
+  }
+
+  /**
+   * Called when a post leaves the viewport.
+   * Cancels pending debounce or in-flight analysis.
+   * @param {string} postId
+   */
+  onPostHidden(postId) {
+    const entry = this.pending.get(postId);
+    if (entry) {
+      clearTimeout(entry.timer);
+      entry.abortController.abort();
+      this.pending.delete(postId);
+    }
+  }
+
+  /**
+   * Internal: enqueue a post for analysis after debounce.
+   */
+  async enqueue(postId, postData, onResult, abortController) {
+    // Check cache first
+    const contentHash = cache.hashContent(postData.text + (postData.imageUrls || []).join(','));
+    const cached = await cache.get(contentHash);
+    if (cached) {
+      this.pending.delete(postId);
+      onResult(postId, cached);
+      return;
+    }
+
+    // Check abort before proceeding
+    if (abortController.signal.aborted) {
+      this.pending.delete(postId);
+      return;
+    }
+
+    // Wait for a concurrency slot
+    if (this.active.size >= MAX_CONCURRENT) {
+      await new Promise((resolve) => {
+        this.waitQueue.push({ postId, postData, resolve });
+      });
+    }
+
+    // Re-check abort after waiting
+    if (abortController.signal.aborted) {
+      this.pending.delete(postId);
+      this.releaseSlot();
+      return;
+    }
+
+    this.active.add(postId);
+
+    try {
+      // Phase 1: Fast heuristics (statistical + linguistic)
+      const heuristicResult = await this.runHeuristics(postData);
+
+      if (abortController.signal.aborted) return;
+
+      // Send preliminary score
+      onResult(postId, { ...heuristicResult, preliminary: true });
+
+      // Phase 2: ML model inference (async, heavier)
+      const mlResult = await this.runML(postData, abortController.signal);
+
+      if (abortController.signal.aborted) return;
+
+      // Combine into final ensemble score
+      const finalResult = computeEnsemble(heuristicResult, mlResult, postData);
+
+      // Cache the final result
+      await cache.set(contentHash, finalResult);
+
+      // Send final score
+      onResult(postId, { ...finalResult, preliminary: false });
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error(`[AI Detector] Analysis failed for ${postId}:`, err);
+      }
+    } finally {
+      this.active.delete(postId);
+      this.pending.delete(postId);
+      this.releaseSlot();
+    }
+  }
+
+  /**
+   * Run fast heuristic analysis (statistical + linguistic).
+   * Async because analyzeText is async, but ML is disabled so it returns quickly.
+   */
+  async runHeuristics(postData) {
+    const result = { text: null, image: null, overall: 0, signals: [] };
+
+    if (postData.text) {
+      result.text = await analyzeText(postData.text, { mlEnabled: false, sensitivity: this.sensitivity });
+      result.signals.push(...(result.text.signals || []));
+    }
+
+    // Compute preliminary overall from heuristics only
+    if (result.text) {
+      result.overall = result.text.score;
+    }
+
+    return result;
+  }
+
+  /**
+   * Run ML model inference (async).
+   * @param {object} postData
+   * @param {AbortSignal} signal
+   */
+  async runML(postData, signal) {
+    const result = { textML: null, imageML: null };
+
+    if (postData.text) {
+      result.textML = await analyzeText(postData.text, { mlEnabled: true, sensitivity: this.sensitivity, signal });
+    }
+
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    if (postData.imageUrls && postData.imageUrls.length > 0) {
+      result.imageML = await analyzeImage(postData.imageUrls, { signal });
+    }
+
+    return result;
+  }
+
+  /**
+   * Release a concurrency slot and unblock the next waiting analysis.
+   */
+  releaseSlot() {
+    if (this.waitQueue.length > 0) {
+      const next = this.waitQueue.shift();
+      next.resolve();
+    }
+  }
+
+  /**
+   * Cancel all pending and active analyses.
+   */
+  cancelAll() {
+    for (const [, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.abortController.abort();
+    }
+    this.pending.clear();
+    this.waitQueue = [];
+  }
+}
+
+// Singleton
+export const analysisQueue = new AnalysisQueue();
