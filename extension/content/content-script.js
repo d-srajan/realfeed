@@ -35,6 +35,15 @@ let intersectionObserver = null;
 let mutationObserver = null;
 let enabled = true;
 
+/**
+ * Tracks fallback timers for badges stuck in "analyzing".
+ * If the service worker is killed mid-analysis and never replies, we revert
+ * the badge to dormant after BADGE_STUCK_TIMEOUT_MS so it doesn't spin forever.
+ * @type {Map<string, ReturnType<typeof setTimeout>>}
+ */
+const badgeAnalyzingTimers = new Map();
+const BADGE_STUCK_TIMEOUT_MS = 15_000;
+
 // ─── Initialization ──────────────────────────────────────────────────
 
 function init() {
@@ -190,27 +199,53 @@ function processPost(postEl) {
 // ─── Viewport Callbacks ──────────────────────────────────────────────
 
 function onPostVisible(postEl, postId) {
+  const badge = getBadgeForPost(postId);
+
+  // Skip if already has a final (non-preliminary) score — nothing left to do
+  if (badge && !badge.isPreliminary() && badge.getScore() != null) return;
+
   // Extract content
   const text = extractPostText(postEl);
   const imageUrls = extractPostImages(postEl);
   const hasVid = hasVideo(postEl);
 
-  // Update badge to "analyzing" state
-  const badge = getBadgeForPost(postId);
+  // Move to "analyzing" only if we don't already have a preliminary score showing
   if (badge && badge.getScore() == null) {
     badge.setAnalyzing();
+
+    // Safety net: if the SW is killed and never responds, revert to dormant
+    // rather than spinning forever. The user can scroll away + back to retry.
+    if (!badgeAnalyzingTimers.has(postId)) {
+      const tid = setTimeout(() => {
+        badgeAnalyzingTimers.delete(postId);
+        const b = getBadgeForPost(postId);
+        if (b && b.getScore() == null) b.setDormant();
+      }, BADGE_STUCK_TIMEOUT_MS);
+      badgeAnalyzingTimers.set(postId, tid);
+    }
   }
 
-  // Send to background for analysis
-  chrome.runtime.sendMessage({
-    type: 'analyzePost',
-    postId,
-    postData: {
-      text,
-      imageUrls,
-      hasVideo: hasVid,
-    },
-  });
+  // Send to background for analysis; handle SW-unavailable gracefully
+  chrome.runtime.sendMessage(
+    { type: 'analyzePost', postId, postData: { text, imageUrls, hasVideo: hasVid } },
+    () => {
+      if (chrome.runtime.lastError) {
+        // Service worker not reachable — clear spinner so badge doesn't stick
+        clearBadgeTimer(postId);
+        const b = getBadgeForPost(postId);
+        if (b && b.getScore() == null) b.setDormant();
+      }
+    }
+  );
+}
+
+/** Clear the stuck-badge fallback timer for a post. */
+function clearBadgeTimer(postId) {
+  const tid = badgeAnalyzingTimers.get(postId);
+  if (tid !== undefined) {
+    clearTimeout(tid);
+    badgeAnalyzingTimers.delete(postId);
+  }
 }
 
 function onPostHidden(postId) {
@@ -224,6 +259,9 @@ function onPostHidden(postId) {
 // ─── Results ─────────────────────────────────────────────────────────
 
 function handleAnalysisResult(postId, result) {
+  // Result arrived — cancel the stuck-badge fallback timer
+  clearBadgeTimer(postId);
+
   const badge = getBadgeForPost(postId);
   if (!badge) return;
 

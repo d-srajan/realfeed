@@ -14,6 +14,8 @@ import { computeEnsemble } from './ensemble.js';
 
 const MAX_CONCURRENT = 2;
 const DEBOUNCE_MS = 300;
+const HEURISTICS_TIMEOUT_MS = 2500; // heuristics should be fast; bail if not
+const ML_TIMEOUT_MS = 4000;         // image fetch / ML timeout before falling back to heuristics
 
 class AnalysisQueue {
   constructor() {
@@ -107,32 +109,47 @@ class AnalysisQueue {
     }
 
     this.active.add(postId);
+    let heuristicResult = null;
 
     try {
-      // Phase 1: Fast heuristics (statistical + linguistic)
-      const heuristicResult = await this.runHeuristics(postData);
+      // Phase 1: Fast heuristics with hard timeout
+      heuristicResult = await Promise.race([
+        this.runHeuristics(postData),
+        new Promise((resolve) =>
+          setTimeout(
+            () => resolve({ text: null, image: null, overall: 50, signals: [], timedOut: true }),
+            HEURISTICS_TIMEOUT_MS
+          )
+        ),
+      ]);
 
       if (abortController.signal.aborted) return;
 
-      // Send preliminary score
+      // Send preliminary score immediately so the badge stops spinning
       onResult(postId, { ...heuristicResult, preliminary: true });
 
-      // Phase 2: ML model inference (async, heavier)
-      const mlResult = await this.runML(postData, abortController.signal);
+      // Phase 2: ML / image analysis with hard timeout
+      // If it times out, heuristic result becomes the final answer
+      const mlResult = await Promise.race([
+        this.runML(postData, abortController.signal),
+        new Promise((resolve) => setTimeout(() => resolve(null), ML_TIMEOUT_MS)),
+      ]);
 
       if (abortController.signal.aborted) return;
 
-      // Combine into final ensemble score
-      const finalResult = computeEnsemble(heuristicResult, mlResult, postData);
+      const finalResult = mlResult
+        ? computeEnsemble(heuristicResult, mlResult, postData)
+        : { ...heuristicResult }; // ML timed out — promote heuristics to final
 
-      // Cache the final result
       await cache.set(contentHash, finalResult);
-
-      // Send final score
       onResult(postId, { ...finalResult, preliminary: false });
     } catch (err) {
       if (err.name !== 'AbortError') {
-        console.error(`[AI Detector] Analysis failed for ${postId}:`, err);
+        console.error(`[RealFeed] Analysis failed for ${postId}:`, err);
+        // Emit whatever we have so the badge never stays stuck spinning
+        if (heuristicResult) {
+          onResult(postId, { ...heuristicResult, preliminary: false });
+        }
       }
     } finally {
       this.active.delete(postId);

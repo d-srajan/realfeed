@@ -33,6 +33,13 @@ chrome.storage.onChanged.addListener((changes) => {
 
 // ─── Message Handling ─────────────────────────────────────────────────
 
+/** Send result back to content script, swallowing errors if the tab navigated away. */
+function sendResult(tabId, postId, result) {
+  chrome.tabs.sendMessage(tabId, { type: 'analysisResult', postId, result }, () => {
+    void chrome.runtime.lastError; // suppress "Could not establish connection" noise
+  });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender) => {
   const tabId = sender.tab?.id;
   if (!tabId) return;
@@ -40,11 +47,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   switch (msg.type) {
     case 'analyzePost':
       analysisQueue.onPostVisible(msg.postId, msg.postData, (postId, result) => {
-        chrome.tabs.sendMessage(tabId, {
-          type: 'analysisResult',
-          postId,
-          result,
-        });
+        sendResult(tabId, postId, result);
       });
       break;
 
@@ -59,4 +62,4 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 loadSettings();
 purgeExpired().catch(() => {});
 
-console.log('[AI Content Detector] Service worker activated');
+console.log('[RealFeed] Service worker activated');
