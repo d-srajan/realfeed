@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RealFeed — Privacy Policy</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 720px; margin: 60px auto; padding: 0 24px; color: #333; line-height: 1.7; }
+    h1 { font-size: 28px; margin-bottom: 4px; }
+    .subtitle { color: #777; font-size: 14px; margin-bottom: 40px; }
+    h2 { font-size: 18px; margin-top: 36px; }
+    ul { padding-left: 24px; }
+    li { margin-bottom: 6px; }
+    code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+    a { color: #0a66c2; }
+  </style>
+</head>
+<body>
+
+<h1>Privacy Policy</h1>
+<div class="subtitle">RealFeed Chrome Extension &mdash; Last updated: March 2026</div>
+
+<h2>Summary</h2>
+<p>
+  RealFeed makes <strong>zero external network requests</strong>. All analysis runs locally inside your browser.
+  No data about you, your LinkedIn feed, or your browsing activity ever leaves your device.
+</p>
+
+<h2>What data we collect</h2>
+<p><strong>None.</strong> RealFeed does not collect, store, transmit, or share any personal data.</p>
+
+<h2>What the extension does locally</h2>
+<p>When you visit LinkedIn, RealFeed:</p>
+<ul>
+  <li>Reads the visible text of LinkedIn posts to run statistical and linguistic analysis</li>
+  <li>Reads image URLs from posts to perform frequency analysis (no images are uploaded anywhere)</li>
+  <li>Stores analysis results in your browser's local storage (<code>IndexedDB</code>) for 7 days, so posts aren't re-analyzed every time you scroll past them</li>
+  <li>Stores your settings (sensitivity level, enabled/disabled state) in <code>chrome.storage.local</code></li>
+</ul>
+<p>All of the above stays on your device and is never transmitted anywhere.</p>
+
+<h2>Permissions explained</h2>
+<ul>
+  <li><strong><code>storage</code></strong> — used to save your settings and the local analysis cache</li>
+  <li><strong>Host permission: <code>linkedin.com</code></strong> — required to inject badges into the LinkedIn page and read post content for local analysis</li>
+</ul>
+
+<h2>Third-party services</h2>
+<p>RealFeed uses no third-party services, analytics, or external APIs of any kind.</p>
+
+<h2>Machine learning models</h2>
+<p>
+  If you choose to add optional ML models (DistilBERT / EfficientNet), they run entirely locally via
+  WebAssembly (ONNX Runtime Web). No data is sent to any model hosting service.
+</p>
+
+<h2>Changes to this policy</h2>
+<p>If this policy changes, the updated version will be published at this URL and the "Last updated" date will be revised.</p>
+
+<h2>Contact</h2>
+<p>Questions? Open an issue at <a href="https://github.com/d-srajan/realfeed">github.com/d-srajan/realfeed</a>.</p>
+
+</body>
+</html>
