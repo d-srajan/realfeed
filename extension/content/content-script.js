@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  * 1. Detect posts in the feed (MutationObserver)
- * 2. Inject dormant badges into post headers (Shadow DOM)
+ * 2. Inject dormant badges into post headers
  * 3. Trigger lazy analysis when posts enter viewport (IntersectionObserver)
  * 4. Communicate with background service worker for analysis
  * 5. Update badges with scores when results arrive
@@ -14,6 +14,7 @@ import { registerPanel, showPanel } from './detail-panel.js';
 import {
   getFeedContainer,
   isPostContainer,
+  isPromotedPost,
   getPostId,
   getPostHeader,
   extractPostText,
@@ -29,6 +30,9 @@ import { hashContent } from '../utils/cache.js';
 const PROCESSED_ATTR = 'data-ai-detector-processed';
 const VIEWPORT_ROOT_MARGIN = '200px'; // start analyzing slightly before visible
 
+// Reduced from 15s — if SW is killed and never replies, revert badge quickly
+const BADGE_STUCK_TIMEOUT_MS = 6_000;
+
 // ─── State ────────────────────────────────────────────────────────────
 
 let intersectionObserver = null;
@@ -37,42 +41,27 @@ let enabled = true;
 
 /**
  * Tracks fallback timers for badges stuck in "analyzing".
- * If the service worker is killed mid-analysis and never replies, we revert
- * the badge to dormant after BADGE_STUCK_TIMEOUT_MS so it doesn't spin forever.
  * @type {Map<string, ReturnType<typeof setTimeout>>}
  */
 const badgeAnalyzingTimers = new Map();
-const BADGE_STUCK_TIMEOUT_MS = 15_000;
 
 // ─── Initialization ──────────────────────────────────────────────────
 
 function init() {
-  // Register custom elements
   registerBadge();
   registerPanel();
 
-  // Check if extension is enabled
   chrome.storage.local.get(['enabled'], (result) => {
-    enabled = result.enabled !== false; // default to true
-    if (enabled) {
-      startObserving();
-    }
+    enabled = result.enabled !== false;
+    if (enabled) startObserving();
   });
 
-  // Listen for enable/disable toggle from popup
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'toggle') {
       enabled = msg.enabled;
-      if (enabled) {
-        startObserving();
-      } else {
-        stopObserving();
-      }
+      if (enabled) startObserving();
+      else stopObserving();
     }
-  });
-
-  // Listen for analysis results from background
-  chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'analysisResult') {
       handleAnalysisResult(msg.postId, msg.result);
     }
@@ -82,13 +71,8 @@ function init() {
 // ─── Observers ────────────────────────────────────────────────────────
 
 function startObserving() {
-  // Process any posts already in the DOM
   processExistingPosts();
-
-  // Watch for new posts added to the feed
   setupMutationObserver();
-
-  // Watch for posts entering/leaving the viewport
   setupIntersectionObserver();
 }
 
@@ -108,28 +92,19 @@ function setupMutationObserver() {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (isPostContainer(node)) processPost(node);
 
-        // Check if the added node is a post container
-        if (isPostContainer(node)) {
-          processPost(node);
-        }
-
-        // Check children for post containers
         const selectorList = Array.isArray(SELECTORS.postContainer)
           ? SELECTORS.postContainer
           : [SELECTORS.postContainer];
         for (const sel of selectorList) {
-          const posts = node.querySelectorAll?.(sel) || [];
-          posts.forEach(processPost);
+          node.querySelectorAll?.(sel).forEach(processPost);
         }
       }
     }
   });
 
-  mutationObserver.observe(feedContainer, {
-    childList: true,
-    subtree: true,
-  });
+  mutationObserver.observe(feedContainer, { childList: true, subtree: true });
 }
 
 function setupIntersectionObserver() {
@@ -140,60 +115,50 @@ function setupIntersectionObserver() {
       for (const entry of entries) {
         const postEl = entry.target;
         const postId = getPostId(postEl) || postEl.getAttribute(PROCESSED_ATTR);
-
         if (!postId) continue;
 
-        if (entry.isIntersecting) {
-          onPostVisible(postEl, postId);
-        } else {
-          onPostHidden(postId);
-        }
+        if (entry.isIntersecting) onPostVisible(postEl, postId);
+        else onPostHidden(postId);
       }
     },
-    {
-      rootMargin: VIEWPORT_ROOT_MARGIN,
-      threshold: 0.1,
-    }
+    { rootMargin: VIEWPORT_ROOT_MARGIN, threshold: 0.1 }
   );
 }
 
 // ─── Post Processing ─────────────────────────────────────────────────
 
 function processExistingPosts() {
-  const posts = querySelectorAll(document, SELECTORS.postContainer);
-  posts.forEach(processPost);
+  querySelectorAll(document, SELECTORS.postContainer).forEach(processPost);
 }
 
 function processPost(postEl) {
-  // Skip if already processed
   if (postEl.hasAttribute(PROCESSED_ATTR)) return;
 
-  const postId = getPostId(postEl) || `post-${hashContent(extractPostText(postEl) || String(Date.now()))}`;
+  // Skip promoted/sponsored posts entirely — they're not user-written
+  if (isPromotedPost(postEl)) {
+    postEl.setAttribute(PROCESSED_ATTR, 'promoted');
+    return;
+  }
+
+  const postId = getPostId(postEl) ||
+    `post-${hashContent(extractPostText(postEl) || String(Date.now()) + Math.random())}`;
   postEl.setAttribute(PROCESSED_ATTR, postId);
 
-  // Inject dormant badge
   const header = getPostHeader(postEl);
-  if (header) {
+  if (header && !header.querySelector(BADGE_TAG)) {
+    // Guard against duplicate injection — only add badge if none exists yet
     const badge = createBadge();
     badge.setAttribute('data-post-id', postId);
     header.appendChild(badge);
 
-    // Badge click → toggle detail panel
     badge.addEventListener('click', () => {
       const score = badge.getScore();
-      if (score == null) return; // no data yet
-
-      showPanel(badge, badge._lastResult || {
-        overall: score,
-        preliminary: badge.isPreliminary(),
-      });
+      if (score == null) return;
+      showPanel(badge, badge._lastResult || { overall: score, preliminary: badge.isPreliminary() });
     });
   }
 
-  // Register with IntersectionObserver for lazy evaluation
-  if (intersectionObserver) {
-    intersectionObserver.observe(postEl);
-  }
+  if (intersectionObserver) intersectionObserver.observe(postEl);
 }
 
 // ─── Viewport Callbacks ──────────────────────────────────────────────
@@ -201,20 +166,19 @@ function processPost(postEl) {
 function onPostVisible(postEl, postId) {
   const badge = getBadgeForPost(postId);
 
-  // Skip if already has a final (non-preliminary) score — nothing left to do
+  // Already has a final score — nothing to do
   if (badge && !badge.isPreliminary() && badge.getScore() != null) return;
 
-  // Extract content
   const text = extractPostText(postEl);
   const imageUrls = extractPostImages(postEl);
   const hasVid = hasVideo(postEl);
 
-  // Move to "analyzing" only if we don't already have a preliminary score showing
+  // If there's genuinely nothing to analyze, stay dormant
+  if (!text && imageUrls.length === 0 && !hasVid) return;
+
   if (badge && badge.getScore() == null) {
     badge.setAnalyzing();
 
-    // Safety net: if the SW is killed and never responds, revert to dormant
-    // rather than spinning forever. The user can scroll away + back to retry.
     if (!badgeAnalyzingTimers.has(postId)) {
       const tid = setTimeout(() => {
         badgeAnalyzingTimers.delete(postId);
@@ -225,12 +189,10 @@ function onPostVisible(postEl, postId) {
     }
   }
 
-  // Send to background for analysis; handle SW-unavailable gracefully
   chrome.runtime.sendMessage(
     { type: 'analyzePost', postId, postData: { text, imageUrls, hasVideo: hasVid } },
     () => {
       if (chrome.runtime.lastError) {
-        // Service worker not reachable — clear spinner so badge doesn't stick
         clearBadgeTimer(postId);
         const b = getBadgeForPost(postId);
         if (b && b.getScore() == null) b.setDormant();
@@ -239,7 +201,11 @@ function onPostVisible(postEl, postId) {
   );
 }
 
-/** Clear the stuck-badge fallback timer for a post. */
+function onPostHidden(postId) {
+  clearBadgeTimer(postId);
+  chrome.runtime.sendMessage({ type: 'cancelAnalysis', postId });
+}
+
 function clearBadgeTimer(postId) {
   const tid = badgeAnalyzingTimers.get(postId);
   if (tid !== undefined) {
@@ -248,18 +214,9 @@ function clearBadgeTimer(postId) {
   }
 }
 
-function onPostHidden(postId) {
-  // Tell background to cancel if still pending
-  chrome.runtime.sendMessage({
-    type: 'cancelAnalysis',
-    postId,
-  });
-}
-
 // ─── Results ─────────────────────────────────────────────────────────
 
 function handleAnalysisResult(postId, result) {
-  // Result arrived — cancel the stuck-badge fallback timer
   clearBadgeTimer(postId);
 
   const badge = getBadgeForPost(postId);

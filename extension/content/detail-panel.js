@@ -246,17 +246,29 @@ export function registerPanel() {}
 
 /**
  * Show (or toggle off) the detail panel anchored to a badge element.
+ * Inserts after the header row so it appears below the author line, not inline with it.
  */
 export function showPanel(anchorEl, data) {
+  const header = anchorEl.parentElement;
+  if (!header) return;
+
   // Toggle off if already open
-  const existing = anchorEl.parentElement?.querySelector(PANEL_TAG);
+  const existing = header.querySelector(PANEL_TAG) ||
+    header.parentElement?.querySelector(PANEL_TAG);
   if (existing) {
     existing.remove();
     return;
   }
 
   const panel = createPanel();
-  anchorEl.parentElement.appendChild(panel);
   panel.setData(data);
+
+  // Insert below the header row so it doesn't disrupt the flex layout
+  if (header.nextSibling) {
+    header.parentElement.insertBefore(panel, header.nextSibling);
+  } else {
+    header.parentElement?.appendChild(panel);
+  }
+
   return panel;
 }

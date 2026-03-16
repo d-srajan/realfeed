@@ -151,6 +151,18 @@ export function getVideoElement(postEl) {
 }
 
 /**
+ * Return true if a post is a promoted/sponsored ad.
+ * Ads should not receive AI scores — we skip badge injection for them.
+ */
+export function isPromotedPost(postEl) {
+  // LinkedIn marks promoted posts with a "Promoted" label in the actor meta
+  const text = postEl.querySelector(
+    '.update-components-actor__sub-description, .feed-shared-actor__sub-description'
+  )?.textContent ?? '';
+  return /\bPromoted\b/i.test(text);
+}
+
+/**
  * Get the post header element where the badge will be injected.
  */
 export function getPostHeader(postEl) {

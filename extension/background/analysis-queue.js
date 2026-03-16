@@ -64,6 +64,7 @@ class AnalysisQueue {
   /**
    * Called when a post leaves the viewport.
    * Cancels pending debounce or in-flight analysis.
+   * Also removes the post from the wait queue so its slot is not permanently held.
    * @param {string} postId
    */
   onPostHidden(postId) {
@@ -72,6 +73,13 @@ class AnalysisQueue {
       clearTimeout(entry.timer);
       entry.abortController.abort();
       this.pending.delete(postId);
+    }
+
+    // Remove from wait queue and unblock the slot so other posts aren't starved
+    const idx = this.waitQueue.findIndex((item) => item.postId === postId);
+    if (idx !== -1) {
+      const [removed] = this.waitQueue.splice(idx, 1);
+      removed.resolve(); // unblock the awaiting promise so the slot is released
     }
   }
 
@@ -109,7 +117,8 @@ class AnalysisQueue {
     }
 
     this.active.add(postId);
-    let heuristicResult = null;
+    // Pre-initialize so the catch block can always emit a fallback result
+    let heuristicResult = { text: null, image: null, overall: 50, signals: [] };
 
     try {
       // Phase 1: Fast heuristics with hard timeout
